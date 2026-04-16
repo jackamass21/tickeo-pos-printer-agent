@@ -215,9 +215,11 @@ function clampNumber(value, min, max, fallback) {
 }
 
 // QR size tuning (dots ~= pixels). Safe defaults for 58mm printers.
-const QR_WIDTH = clampNumber(process.env.QR_WIDTH, 80, 260, 160);
+// Note: density "d24" often looks smaller; we compensate with a larger default width.
+const QR_DENSITY = String(process.env.QR_DENSITY || "d24"); // "s8" | "d8" | "d24" (etc)
+const QR_WIDTH_DEFAULT = QR_DENSITY === "d24" ? 280 : 160;
+const QR_WIDTH = clampNumber(process.env.QR_WIDTH, 80, 420, QR_WIDTH_DEFAULT);
 const QR_MARGIN = clampNumber(process.env.QR_MARGIN, 0, 4, 1);
-const QR_DENSITY = String(process.env.QR_DENSITY || "s8"); // "s8" | "d8" | "d24" (etc)
 const QR_FEED = clampNumber(process.env.QR_FEED, 0, 5, 0); // line feeds after QR image
 
 async function qrToImageBuffer(text) {
