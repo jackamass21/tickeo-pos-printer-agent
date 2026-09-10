@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tickeo POS Printer Agent</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <h1>Tickeo POS Printer Agent</h1>
+          <p id="service-summary">Cargando servicio...</p>
+        </div>
+        <div class="status-pill" id="service-pill">Iniciando</div>
+      </section>
+
+      <nav class="tabs" aria-label="Secciones">
+        <button class="tab active" type="button" data-tab="service">Servicio</button>
+        <button class="tab" type="button" data-tab="printer">Impresora</button>
+        <button class="tab" type="button" data-tab="logs">Logs</button>
+        <button class="tab" type="button" data-tab="settings">Config</button>
+      </nav>
+
+      <section class="tab-panel active" id="tab-service">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Servicio local</h2>
+            <div class="button-row">
+              <button id="check-update-btn" type="button" class="secondary">Verificar update</button>
+              <button id="refresh-btn" type="button">Actualizar</button>
+            </div>
+          </div>
+          <dl class="facts">
+            <div><dt>Estado</dt><dd id="status-ok">-</dd></div>
+            <div><dt>Version app</dt><dd id="status-version">-</dd></div>
+            <div><dt>URL</dt><dd id="status-url">-</dd></div>
+            <div><dt>Puerto</dt><dd id="status-port">-</dd></div>
+            <div><dt>PID</dt><dd id="status-pid">-</dd></div>
+            <div><dt>Node</dt><dd id="status-node">-</dd></div>
+            <div><dt>Plataforma</dt><dd id="status-platform">-</dd></div>
+            <div><dt>Update</dt><dd id="status-update">-</dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section class="tab-panel" id="tab-printer">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Dispositivo USB</h2>
+            <button id="rescan-btn" type="button">Re-escanear</button>
+          </div>
+          <div id="printer-list" class="printer-list"></div>
+        </article>
+      </section>
+
+      <section class="tab-panel" id="tab-logs">
+        <article class="panel logs-panel">
+          <div class="panel-head">
+            <h2>Historial de eventos</h2>
+            <button id="export-log-btn" type="button">Exportar log</button>
+          </div>
+          <div id="log-list" class="log-list"></div>
+        </article>
+      </section>
+
+      <section class="tab-panel" id="tab-settings">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>UsbDK</h2>
+            <button id="usbdk-btn" type="button">Instalar / descargar</button>
+          </div>
+          <div class="driver-state" id="usbdk-state">-</div>
+          <p class="muted">En Windows, UsbDK permite abrir impresoras USB desde Node sin depender del driver de spooler.</p>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Inicio con Windows</h2>
+            <label class="switch">
+              <input id="autostart-toggle" type="checkbox" />
+              <span></span>
+            </label>
+          </div>
+          <p class="muted">Activa el agente al iniciar sesion para que el POS encuentre el puerto local sin abrir consola.</p>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Depuracion</h2>
+            <button id="upload-debug-btn" type="button">Enviar diagnostico</button>
+          </div>
+          <label class="check-row">
+            <input id="share-debug-toggle" type="checkbox" checked />
+            <span>Compartir datos de depuracion con Tickeo.cl</span>
+          </label>
+          <p class="muted">Envía un TXT con estado del servicio, configuracion local y logs a printer.tickeo.cl/upload.</p>
+          <p class="muted" id="debug-upload-status"></p>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Impresion</h2>
+            <button id="test-print-btn" type="button">Probar impresion</button>
+          </div>
+
+          <form id="print-config-form" class="settings-grid">
+            <label>
+              <span>Modo QR</span>
+              <select name="qrMode">
+                <option value="image">Imagen</option>
+                <option value="native">QR nativo ESC/POS</option>
+              </select>
+            </label>
+            <label>
+              <span>Densidad imagen</span>
+              <select name="qrImageDensity">
+                <option value="s8">s8 single 8-bit</option>
+                <option value="d8">d8 double 8-bit</option>
+                <option value="d24">d24 double 24-bit</option>
+              </select>
+            </label>
+            <label>
+              <span>Ancho QR imagen</span>
+              <input name="qrImageWidth" type="number" min="80" max="420" step="10" />
+            </label>
+            <label>
+              <span>Margen QR imagen</span>
+              <input name="qrImageMargin" type="number" min="0" max="4" step="1" />
+            </label>
+            <label>
+              <span>Version QR nativo</span>
+              <input name="qrNativeVersion" type="number" min="1" max="16" step="1" />
+            </label>
+            <label>
+              <span>Nivel QR nativo</span>
+              <select name="qrNativeLevel">
+                <option value="L">L</option>
+                <option value="M">M</option>
+                <option value="Q">Q</option>
+                <option value="H">H</option>
+              </select>
+            </label>
+            <label>
+              <span>Tamano QR nativo</span>
+              <input name="qrNativeSize" type="number" min="1" max="8" step="1" />
+            </label>
+            <label>
+              <span>Lineas despues QR</span>
+              <input name="qrFeed" type="number" min="0" max="5" step="1" />
+            </label>
+            <label>
+              <span>Fuente</span>
+              <select name="fontFamily">
+                <option value="A">A</option>
+                <option value="B">B</option>
+                <option value="C">C</option>
+              </select>
+            </label>
+            <label>
+              <span>Titulo ancho</span>
+              <input name="titleWidth" type="number" min="0" max="3" step="1" />
+            </label>
+            <label>
+              <span>Titulo alto</span>
+              <input name="titleHeight" type="number" min="0" max="3" step="1" />
+            </label>
+            <label>
+              <span>Texto ancho</span>
+              <input name="textWidth" type="number" min="0" max="3" step="1" />
+            </label>
+            <label>
+              <span>Texto alto</span>
+              <input name="textHeight" type="number" min="0" max="3" step="1" />
+            </label>
+          </form>
+        </article>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

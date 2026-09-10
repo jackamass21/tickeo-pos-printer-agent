@@ -118,4 +118,7 @@ echo.
 echo Ahora puedes ejecutar:
 echo iniciar_tickeo_pos_printer.bat
 echo.
+echo Si la impresora USB no abre, instala UsbDK desde:
+echo https://github.com/daynix/UsbDk/releases
+echo.
 pause

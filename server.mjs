@@ -1,8 +1,10 @@
 import express from "express";
 import cors from "cors";
 import readline from "node:readline/promises";
+import { EventEmitter } from "node:events";
+import { fileURLToPath } from "node:url";
 import escpos from "escpos";
-import USBAdapter from "./usb-adapter.mjs";
+import USBAdapter, { getUsbBackendStatus } from "./usb-adapter.mjs";
 import QRCode from "qrcode";
 
 escpos.USB = USBAdapter;
@@ -11,11 +13,43 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "3mb" }));
 
+export const serviceEvents = new EventEmitter();
+
 let selectedPrinter = null;
 let selectedPrinterRef = null;
+let serverInstance = null;
+let startedAt = null;
+const DEFAULT_HOST = "127.0.0.1";
+const DEFAULT_PORT = 17891;
+const logEntries = [];
+const MAX_LOG_ENTRIES = 500;
+const QR_IMAGE_DENSITIES = ["s8", "d8", "d24"];
+const QR_NATIVE_LEVELS = ["L", "M", "Q", "H"];
+const FONT_FAMILIES = ["A", "B", "C"];
+
+let printConfig = normalizePrintConfig({
+  qrMode: process.env.QR_MODE || "image",
+  qrImageDensity: process.env.QR_DENSITY || "d24",
+  qrImageWidth: process.env.QR_WIDTH,
+  qrImageMargin: process.env.QR_MARGIN,
+  qrNativeVersion: process.env.QR_VERSION,
+  qrNativeLevel: process.env.QR_LEVEL,
+  qrNativeSize: process.env.QR_NATIVE_SIZE,
+  qrFeed: process.env.QR_FEED,
+  fontFamily: process.env.PRINTER_FONT || "A",
+  titleWidth: process.env.PRINTER_TITLE_WIDTH,
+  titleHeight: process.env.PRINTER_TITLE_HEIGHT,
+  textWidth: process.env.PRINTER_TEXT_WIDTH,
+  textHeight: process.env.PRINTER_TEXT_HEIGHT
+});
 
 function log(level, message, meta) {
   const timestamp = new Date().toISOString();
+  const entry = { timestamp, level, message, meta: meta ?? null };
+  logEntries.push(entry);
+  if (logEntries.length > MAX_LOG_ENTRIES) logEntries.shift();
+  serviceEvents.emit("log", entry);
+
   if (meta === undefined) {
     console[level](`[${timestamp}] ${message}`);
     return;
@@ -148,6 +182,48 @@ function getSelectedPrinterDevice() {
   return printers.find((device) => isSamePrinter(device, selectedPrinterRef)) ?? printers[0];
 }
 
+function refKey(ref) {
+  return [
+    ref.vendorId ?? "",
+    ref.productId ?? "",
+    ref.busNumber ?? "",
+    ref.deviceAddress ?? "",
+    ref.portNumbers ?? ""
+  ].join(":");
+}
+
+async function listPrinters() {
+  const printers = getAvailablePrinters();
+  const describedPrinters = await Promise.all(
+    printers.map((device, index) => describePrinter(device, index + 1))
+  );
+
+  return describedPrinters.map((printer, index) => {
+    const ref = buildPrinterRef(printers[index]);
+    return {
+      ...printer,
+      ref,
+      key: refKey(ref),
+      selected: selectedPrinterRef ? isSamePrinter(printers[index], selectedPrinterRef) : index === 0
+    };
+  });
+}
+
+async function selectPrinterByKey(key) {
+  const printers = getAvailablePrinters();
+  const indexed = printers.map((device) => ({ device, ref: buildPrinterRef(device) }));
+  const found = indexed.find((entry) => refKey(entry.ref) === key);
+
+  if (!found) {
+    throw new Error("Impresora no encontrada");
+  }
+
+  selectedPrinter = found.device;
+  selectedPrinterRef = found.ref;
+  log("info", "Impresora seleccionada desde panel", await describePrinter(found.device, printers.indexOf(found.device) + 1));
+  return selectedPrinterRef;
+}
+
 async function choosePrinterInteractively(printers) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     return printers[0] ?? null;
@@ -173,7 +249,7 @@ async function choosePrinterInteractively(printers) {
   }
 }
 
-async function initializePrinterSelection() {
+export async function initializePrinterSelection({ interactive = true } = {}) {
   const printers = getAvailablePrinters();
 
   if (!printers.length) {
@@ -194,7 +270,7 @@ async function initializePrinterSelection() {
     return;
   }
 
-  selectedPrinter = await choosePrinterInteractively(printers);
+  selectedPrinter = interactive ? await choosePrinterInteractively(printers) : printers[0];
 
   if (selectedPrinter) {
     selectedPrinterRef = buildPrinterRef(selectedPrinter);
@@ -214,23 +290,81 @@ function clampNumber(value, min, max, fallback) {
   return Math.min(max, Math.max(min, n));
 }
 
-// QR size tuning (dots ~= pixels). Safe defaults for 58mm printers.
-// Note: density "d24" often looks smaller; we compensate with a larger default width.
-const QR_DENSITY = String(process.env.QR_DENSITY || "d24"); // "s8" | "d8" | "d24" (etc)
-const QR_WIDTH_DEFAULT = QR_DENSITY === "d24" ? 280 : 160;
-const QR_WIDTH = clampNumber(process.env.QR_WIDTH, 80, 420, QR_WIDTH_DEFAULT);
-const QR_MARGIN = clampNumber(process.env.QR_MARGIN, 0, 4, 1);
-const QR_FEED = clampNumber(process.env.QR_FEED, 0, 5, 0); // line feeds after QR image
+function normalizeChoice(value, allowed, fallback) {
+  const normalized = String(value || "").toUpperCase();
+  return allowed.includes(normalized) ? normalized : fallback;
+}
 
-async function qrToImageBuffer(text) {
+function normalizePrintConfig(config = {}) {
+  const qrImageDensity = String(config.qrImageDensity || "d24").toLowerCase();
+  const density = QR_IMAGE_DENSITIES.includes(qrImageDensity) ? qrImageDensity : "d24";
+  const qrMode = ["image", "native"].includes(String(config.qrMode || "")) ? String(config.qrMode) : "image";
+  const defaultImageWidth = density === "d24" ? 280 : 160;
+
+  return {
+    qrMode,
+    qrImageDensity: density,
+    qrImageWidth: clampNumber(config.qrImageWidth, 80, 420, defaultImageWidth),
+    qrImageMargin: clampNumber(config.qrImageMargin, 0, 4, 1),
+    qrNativeVersion: clampNumber(config.qrNativeVersion, 1, 16, 3),
+    qrNativeLevel: normalizeChoice(config.qrNativeLevel, QR_NATIVE_LEVELS, "L"),
+    qrNativeSize: clampNumber(config.qrNativeSize, 1, 8, 6),
+    qrFeed: clampNumber(config.qrFeed, 0, 5, 0),
+    fontFamily: normalizeChoice(config.fontFamily, FONT_FAMILIES, "A"),
+    titleWidth: clampNumber(config.titleWidth, 0, 3, 1),
+    titleHeight: clampNumber(config.titleHeight, 0, 3, 1),
+    textWidth: clampNumber(config.textWidth, 0, 3, 0),
+    textHeight: clampNumber(config.textHeight, 0, 3, 0)
+  };
+}
+
+export function getPrintConfig() {
+  return { ...printConfig };
+}
+
+export function setPrintConfig(config = {}) {
+  printConfig = normalizePrintConfig({ ...printConfig, ...config });
+  log("info", "Configuracion de impresion actualizada", printConfig);
+  return getPrintConfig();
+}
+
+async function qrToImageBuffer(text, config) {
   const dataUrl = await QRCode.toDataURL(text, {
-    margin: Number.isFinite(QR_MARGIN) ? QR_MARGIN : 1,
-    width: Number.isFinite(QR_WIDTH) ? QR_WIDTH : 120,
+    margin: config.qrImageMargin,
+    width: config.qrImageWidth,
     color: { dark: "#000000", light: "#FFFFFF" }
   });
 
   const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
   return Buffer.from(base64, "base64");
+}
+
+async function printQr(printer, qrText, config) {
+  printer.align("ct");
+
+  if (config.qrMode === "native") {
+    printer.qrcode(qrText, config.qrNativeVersion, config.qrNativeLevel, config.qrNativeSize);
+    if (config.qrFeed > 0) printer.feed(config.qrFeed);
+    printer.align("lt");
+    return;
+  }
+
+  const imageBuffer = await qrToImageBuffer(qrText, config);
+  await new Promise((res, rej) => {
+    escpos.Image.load(imageBuffer, "image/png", (result) => {
+      if (result instanceof Error) {
+        rej(result);
+        return;
+      }
+
+      (async () => {
+        await printer.image(result, config.qrImageDensity);
+        if (config.qrFeed > 0) printer.feed(config.qrFeed);
+        printer.align("lt");
+        res();
+      })().catch(rej);
+    });
+  });
 }
 
 async function printReceipt(payload) {
@@ -262,15 +396,17 @@ async function printReceipt(payload) {
       }
 
       const printer = new escpos.Printer(device, options);
+      const config = getPrintConfig();
 
       try {
         printer
+          .font(config.fontFamily)
           .align("ct")
           .style("b")
-          .size(1, 1)
+          .size(config.titleWidth, config.titleHeight)
           .text("TICKEO")
-          .size(0, 0)
           .style("normal")
+          .size(config.textWidth, config.textHeight)
           .text(payload.event.name || "")
           .text(`${payload.event.city || ""} - ${payload.event.venue_name || ""}`.trim())
           .text(payload.event.starts_at || "")
@@ -293,34 +429,13 @@ async function printReceipt(payload) {
           printer.text(`CODIGO: ${t.code || ""}`);
 
           if (t.qr_url) {
-            log("info", "Imprimiendo QR como imagen", {
+            log("info", "Imprimiendo QR", {
               orderId: payload.order?.id ?? null,
-              ticketCode: t.code ?? null
+              ticketCode: t.code ?? null,
+              qrMode: config.qrMode
             });
 
-            const imageBuffer = await qrToImageBuffer(String(t.qr_url));
-
-            await new Promise((res, rej) => {
-              escpos.Image.load(imageBuffer, "image/png", (result) => {
-                if (result instanceof Error) {
-                  rej(result);
-                  return;
-                }
-
-                try {
-                  printer.align("ct");
-                  // escpos.Printer#image es async, no se puede encadenar con feed/align
-                  (async () => {
-                    await printer.image(result, QR_DENSITY);
-                    if (QR_FEED > 0) printer.feed(QR_FEED);
-                    printer.align("lt");
-                    res();
-                  })().catch(rej);
-                } catch (error) {
-                  rej(error);
-                }
-              });
-            });
+            await printQr(printer, String(t.qr_url), config);
           }
 
           printer.drawLine();
@@ -358,6 +473,45 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/status", async (_req, res) => {
+  res.json(await getServiceStatus());
+});
+
+app.get("/printers", async (_req, res) => {
+  res.json({ printers: await listPrinters() });
+});
+
+app.post("/printers/select", async (req, res) => {
+  try {
+    await selectPrinterByKey(String(req.body?.key || ""));
+    res.json({ ok: true, selectedPrinterRef });
+  } catch (e) {
+    res.status(404).json({ ok: false, error: String(e) });
+  }
+});
+
+app.get("/logs", (_req, res) => {
+  res.json({ logs: getLogs() });
+});
+
+app.get("/config/print", (_req, res) => {
+  res.json({ config: getPrintConfig() });
+});
+
+app.post("/config/print", (req, res) => {
+  res.json({ ok: true, config: setPrintConfig(req.body || {}) });
+});
+
+app.post("/print/test", async (_req, res) => {
+  try {
+    await printTestReceipt();
+    res.json({ ok: true });
+  } catch (e) {
+    log("error", "Fallo impresion de prueba", serializeError(e));
+    res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
 app.post("/print", async (req, res) => {
   try {
     await printReceipt(req.body);
@@ -371,8 +525,98 @@ app.post("/print", async (req, res) => {
   }
 });
 
-await initializePrinterSelection();
+export function getLogs() {
+  return [...logEntries];
+}
 
-app.listen(17891, "127.0.0.1", () => {
-  console.log("Tickeo POS Printer Agent escuchando en http://127.0.0.1:17891");
-});
+export async function printTestReceipt() {
+  return printReceipt({
+    event: {
+      name: "Prueba Tickeo",
+      city: "Santiago",
+      venue_name: "POS",
+      starts_at: new Date().toLocaleString("es-CL")
+    },
+    order: {
+      id: "TEST",
+      buyer_name: "Cliente de prueba",
+      buyer_email: "test@tickeo.cl",
+      payment_provider: "TEST",
+      subtotal: 1000,
+      service_fee: 0,
+      total: 1000
+    },
+    tickets: [
+      {
+        ticket_type: "Entrada demo",
+        zone: "General",
+        row: "A",
+        seat: "1",
+        code: "TEST-QR-123",
+        qr_url: "https://tickeo.cl/test-print"
+      }
+    ]
+  });
+}
+
+export async function getServiceStatus() {
+  const printers = await listPrinters();
+  return {
+    ok: Boolean(serverInstance?.listening),
+    host: DEFAULT_HOST,
+    port: DEFAULT_PORT,
+    url: `http://${DEFAULT_HOST}:${DEFAULT_PORT}`,
+    startedAt,
+    selectedPrinterRef,
+    printerCount: printers.length,
+    printers,
+    usbBackend: getUsbBackendStatus(),
+    pid: process.pid,
+    platform: process.platform,
+    node: process.version
+  };
+}
+
+export { listPrinters, selectPrinterByKey, printReceipt };
+
+export async function startService({ host = DEFAULT_HOST, port = DEFAULT_PORT, interactive = false } = {}) {
+  if (serverInstance?.listening) {
+    return serverInstance;
+  }
+
+  await initializePrinterSelection({ interactive });
+
+  return new Promise((resolve, reject) => {
+    serverInstance = app.listen(port, host, () => {
+      startedAt = new Date().toISOString();
+      log("info", `Tickeo POS Printer Agent escuchando en http://${host}:${port}`);
+      resolve(serverInstance);
+    });
+
+    serverInstance.once("error", (error) => {
+      log("error", "No se pudo iniciar servicio HTTP", serializeError(error));
+      reject(error);
+    });
+  });
+}
+
+export async function stopService() {
+  if (!serverInstance) return;
+
+  await new Promise((resolve, reject) => {
+    serverInstance.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+
+  log("info", "Servicio HTTP detenido");
+  serverInstance = null;
+  startedAt = null;
+}
+
+const isCli = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+
+if (isCli) {
+  await startService({ interactive: true });
+}

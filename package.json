@@ -1,13 +1,69 @@
 {
   "name": "tickeo-pos-printer-agent",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/jackamass21/tickeo-pos-printer-agent.git"
+  },
   "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server.mjs",
+    "dist:win": "electron-builder --win",
+    "release:win": "electron-builder --win --publish always"
+  },
   "dependencies": {
     "cors": "^2.8.5",
+    "electron-updater": "^6.6.2",
     "escpos": "^3.0.0-alpha.6",
     "escpos-usb": "^3.0.0-alpha.4",
     "express": "^4.21.2",
     "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "electron": "^36.2.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "cl.tickeo.pos-printer-agent",
+    "productName": "Tickeo POS Printer Agent",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "assets/**/*",
+      "server.mjs",
+      "usb-adapter.mjs",
+      "lib/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-setup-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable-${arch}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "jackamass21",
+        "repo": "tickeo-pos-printer-agent",
+        "releaseType": "release"
+      }
+    ]
   }
 }

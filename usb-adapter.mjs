@@ -3,13 +3,29 @@ import { EventEmitter } from "node:events";
 import usbModule from "usb";
 
 const usb = usbModule.usb || usbModule;
+let usbDkRequested = false;
+let usbDkLoaded = false;
+let usbDkError = null;
 
 if (os.platform() === "win32" && typeof usbModule.useUsbDkBackend === "function") {
   try {
+    usbDkRequested = true;
     usbModule.useUsbDkBackend();
+    usbDkLoaded = true;
   } catch {
+    usbDkError = "UsbDk no disponible o no cargado";
     // If UsbDk is unavailable we'll fall back to the default backend and surface the real open error later.
   }
+}
+
+export function getUsbBackendStatus() {
+  return {
+    platform: os.platform(),
+    usbDkSupported: typeof usbModule.useUsbDkBackend === "function",
+    usbDkRequested,
+    usbDkLoaded,
+    usbDkError
+  };
 }
 
 const IFACE_CLASS = {

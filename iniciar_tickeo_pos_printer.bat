@@ -32,10 +32,10 @@ if not exist node_modules (
     )
 )
 
-echo Iniciando agente de impresion...
-echo URL local: http://127.0.0.1:17891/health
+echo Iniciando panel Tickeo POS Printer Agent...
+echo Servicio local: http://127.0.0.1:17891/health
 echo.
-node server.mjs
+call npm start
 
 echo.
 echo El agente se detuvo.
